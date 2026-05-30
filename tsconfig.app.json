@@ -1,0 +1,21 @@
+import { initializeApp } from 'firebase/app';
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDOi9oAAPBrivAzvXO2oySnIBL7qax1QVQ",
+  authDomain: "mystic-aggregator-2f4nj.firebaseapp.com",
+  projectId: "mystic-aggregator-2f4nj",
+  storageBucket: "mystic-aggregator-2f4nj.firebasestorage.app",
+  messagingSenderId: "417060687102",
+  appId: "1:417060687102:web:8c7674c48c902b0c4169af"
+};
+
+const app = initializeApp(firebaseConfig);
+
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export const storage = getStorage(app);
+
+export default app;

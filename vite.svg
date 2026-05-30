@@ -1,0 +1,452 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Users, Calendar, BarChart3, LogOut, Download, Upload, Plus, Edit, Trash2, MessageCircle 
+} from 'lucide-react';
+import { Toaster, toast } from 'sonner';
+import jsPDF from 'jspdf';
+import { 
+  collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, 
+  query, orderBy, setDoc, getDoc 
+} from 'firebase/firestore';
+import { 
+  createUserWithEmailAndPassword, signInWithEmailAndPassword, 
+  signOut, onAuthStateChanged 
+} from 'firebase/auth';
+import { db, auth } from './firebase';
+
+// ==================== TYPES ====================
+interface Customer {
+  id: string;
+  name: string;
+  phone: string;
+  phone2?: string;
+  address: string;
+  type: string;
+  rating?: number;
+  devicesCount?: number;
+  createdAt: string;
+}
+
+interface Contract {
+  id: string;
+  customerId: string;
+  customerName: string;
+  startDate: string;
+  endDate: string;
+  value: number;
+  visits: number;
+  devicesCount: number;
+  status: string;
+}
+
+type Role = 'مدير النظام' | 'المدير العام';
+
+const App: React.FC = () => {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+"  const [, setCurrentUser] = useState<any>(null);"
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [darkMode, setDarkMode] = useState(false);
+
+  // Data from Firestore
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+
+  // Login
+  const [loginEmail, setLoginEmail] = useState('admin@mgroupcool.com');
+  const [loginPassword, setLoginPassword] = useState('Admin123456');
+
+  // Modals
+  const [showCustomerModal, setShowCustomerModal] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [showContractModal, setShowContractModal] = useState(false);
+
+  // ==================== FIREBASE AUTH + DATA ====================
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setCurrentUser(user);
+        setIsLoggedIn(true);
+        setupRealtimeListeners();
+      } else {
+        setIsLoggedIn(false);
+        setCurrentUser(null);
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  const setupRealtimeListeners = () => {
+    // Customers - Real-time
+    const customersQuery = query(collection(db, 'customers'), orderBy('createdAt', 'desc'));
+    const unsubCustomers = onSnapshot(customersQuery, (snapshot) => {
+      const data: Customer[] = [];
+      snapshot.forEach(doc => data.push({ id: doc.id, ...doc.data() } as Customer));
+      setCustomers(data);
+    });
+
+    // Contracts - Real-time
+    const contractsQuery = query(collection(db, 'contracts'), orderBy('startDate', 'desc'));
+    const unsubContracts = onSnapshot(contractsQuery, (snapshot) => {
+      const data: Contract[] = [];
+      snapshot.forEach(doc => data.push({ id: doc.id, ...doc.data() } as Contract));
+      setContracts(data);
+    });
+
+    return () => {
+      unsubCustomers();
+      unsubContracts();
+    };
+  };
+
+  // Login with auto-create admin
+  const handleLogin = async () => {
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      toast.success('تم تسجيل الدخول بنجاح');
+    } catch (error: any) {
+      if (error.code === 'auth/user-not-found') {
+        // Create default admin
+        try {
+          await createUserWithEmailAndPassword(auth, loginEmail, loginPassword);
+          toast.success('تم إنشاء حساب المدير وتسجيل الدخول');
+        } catch (createError) {
+          toast.error('فشل في إنشاء الحساب');
+        }
+      } else {
+        toast.error('بيانات الدخول غير صحيحة');
+      }
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setIsLoggedIn(false);
+  };
+
+  // ==================== CUSTOMERS (Firestore) ====================
+  const saveCustomer = async (data: Partial<Customer>) => {
+    try {
+      if (editingCustomer) {
+        await updateDoc(doc(db, 'customers', editingCustomer.id), {
+          ...data,
+          updatedAt: new Date().toISOString()
+        });
+        toast.success('تم تعديل العميل بنجاح');
+      } else {
+        await addDoc(collection(db, 'customers'), {
+          ...data,
+          createdAt: new Date().toISOString()
+        });
+        toast.success('تم إضافة العميل بنجاح');
+      }
+      setShowCustomerModal(false);
+      setEditingCustomer(null);
+    } catch (error) {
+      toast.error('حدث خطأ أثناء الحفظ');
+    }
+  };
+
+  const deleteCustomer = async (id: string) => {
+    if (!confirm('هل أنت متأكد من حذف العميل؟')) return;
+    try {
+      await deleteDoc(doc(db, 'customers', id));
+      toast.success('تم حذف العميل');
+    } catch (error) {
+      toast.error('فشل في الحذف');
+    }
+  };
+
+  const openEditCustomer = (customer: Customer) => {
+    setEditingCustomer(customer);
+    setShowCustomerModal(true);
+  };
+
+  // ==================== CONTRACTS ====================
+  const saveContract = async (data: any) => {
+    try {
+      const customer = customers.find(c => c.id === data.customerId);
+      await addDoc(collection(db, 'contracts'), {
+        customerId: data.customerId,
+        customerName: customer?.name || '',
+        startDate: data.startDate,
+        endDate: data.endDate,
+        value: Number(data.value),
+        visits: Number(data.visits),
+        devicesCount: Number(data.devicesCount),
+        status: 'نشط',
+        createdAt: new Date().toISOString()
+      });
+      setShowContractModal(false);
+      toast.success('تم إنشاء العقد بنجاح');
+    } catch (error) {
+      toast.error('فشل في إنشاء العقد');
+    }
+  };
+
+  // PDF
+  const generateContractPDF = (contract: Contract) => {
+    const doc = new jsPDF();
+    doc.text("M Group Cool - عقد صيانة", 105, 20, { align: "center" });
+    doc.text(`العميل: ${contract.customerName}`, 20, 50);
+    doc.text(`القيمة: ${contract.value} جنيه`, 20, 60);
+    doc.text(`الزيارات: ${contract.visits}`, 20, 70);
+    doc.save(`Contract_${contract.customerName}.pdf`);
+    toast.success('تم تحميل PDF');
+  };
+
+  // WhatsApp
+  const openWhatsApp = (phone: string) => {
+    window.open(`https://wa.me/${phone.replace(/\D/g, '')}`, '_blank');
+  };
+
+  // Backup & Restore
+  const exportBackup = () => {
+    const data = { customers, contracts, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MGroupCool_Backup_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    toast.success('تم التصدير');
+  };
+
+  const importBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.customers) {
+          for (const item of data.customers) {
+            await addDoc(collection(db, 'customers'), item);
+          }
+        }
+        toast.success('تم الاستيراد بنجاح');
+      } catch {
+        toast.error('فشل الاستيراد');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // Stats
+  const stats = {
+    customers: customers.length,
+    contractsActive: contracts.filter(c => c.status === 'نشط').length,
+  };
+
+  // ==================== UI ====================
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-900 to-blue-950 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl shadow-2xl p-10 w-full max-w-md text-center">
+          <img src="/logo.png" alt="Logo" className="h-20 w-20 mx-auto mb-6" />
+          <h1 className="text-3xl font-bold text-blue-900 mb-2">M Group Cool ERP &amp; CRM</h1>
+          <p className="text-blue-600 mb-8">نظام إدارة متكامل</p>
+
+          <div className="space-y-4">
+            <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="input" placeholder="البريد الإلكتروني" />
+            <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="input" placeholder="كلمة المرور" />
+            <button onClick={handleLogin} className="btn-primary w-full py-3 text-lg">تسجيل الدخول</button>
+          </div>
+          <p className="text-xs text-gray-500 mt-6">© 2025 M Group Cool</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`min-h-screen bg-gray-50 dark:bg-gray-900 ${darkMode ? 'dark' : ''}`}>
+      <Toaster position="top-center" richColors />
+
+      {/* Header */}
+      <header className="bg-white dark:bg-gray-800 border-b px-6 py-4 flex justify-between items-center">
+        <div className="flex items-center gap-4">
+          <img src="/logo.png" className="h-10 w-10" />
+          <div>
+            <h1 className="font-bold text-xl">M Group Cool ERP &amp; CRM</h1>
+            <p className="text-sm text-blue-600">متصل بـ Firebase</p>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button onClick={exportBackup} className="btn-secondary flex items-center gap-2"><Download size={18} /> تصدير</button>
+          <label className="btn-secondary flex items-center gap-2 cursor-pointer">
+            <Upload size={18} /> استيراد
+            <input type="file" accept=".json" onChange={importBackup} className="hidden" />
+          </label>
+          <button onClick={() => setDarkMode(!darkMode)} className="btn-secondary">🌙</button>
+          <button onClick={handleLogout} className="btn-secondary text-red-600 flex items-center gap-2"><LogOut size={18} /> خروج</button>
+        </div>
+      </header>
+
+      <div className="flex">
+        {/* Sidebar */}
+        <div className="w-72 bg-white dark:bg-gray-800 border-l p-4 min-h-screen">
+          <nav className="space-y-1">
+            {[
+              { id: 'dashboard', label: 'لوحة التحكم', icon: BarChart3 },
+              { id: 'customers', label: 'إدارة العملاء', icon: Users },
+              { id: 'contracts', label: 'عقود الصيانة', icon: Calendar },
+            ].map(item => (
+              <button key={item.id} onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl ${activeTab === item.id ? 'bg-blue-600 text-white' : 'hover:bg-blue-50'}`}>
+                <item.icon size={20} /> {item.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 p-8">
+          {activeTab === 'dashboard' && (
+            <div>
+              <h2 className="text-3xl font-bold mb-8">لوحة التحكم</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="card p-6"><div>عدد العملاء</div><div className="text-4xl font-bold mt-2 text-blue-700">{stats.customers}</div></div>
+                <div className="card p-6"><div>العقود النشطة</div><div className="text-4xl font-bold mt-2 text-blue-700">{stats.contractsActive}</div></div>
+              </div>
+            </div>
+          )}
+
+          {/* Customers */}
+          {activeTab === 'customers' && (
+            <div>
+              <div className="flex justify-between mb-6">
+                <h2 className="text-3xl font-bold">إدارة العملاء</h2>
+                <button onClick={() => { setEditingCustomer(null); setShowCustomerModal(true); }} className="btn-primary"><Plus size={20} /> إضافة عميل</button>
+              </div>
+
+              <div className="card overflow-hidden">
+                <table className="w-full">
+                  <thead><tr className="table-header">
+                    <th className="p-4">الاسم</th><th className="p-4">الهاتف</th><th className="p-4">الأجهزة</th><th className="p-4">التقييم</th><th className="p-4">إجراءات</th>
+                  </tr></thead>
+                  <tbody>
+                    {customers.map(c => (
+                      <tr key={c.id} className="border-t">
+                        <td className="p-4 font-medium">{c.name}</td>
+                        <td className="p-4">{c.phone}</td>
+                        <td className="p-4">{c.devicesCount || 1}</td>
+                        <td className="p-4">{'★'.repeat(c.rating || 5)}</td>
+                        <td className="p-4 flex gap-3">
+                          <button onClick={() => openEditCustomer(c)}><Edit size={18} className="text-blue-600" /></button>
+                          <button onClick={() => deleteCustomer(c.id)}><Trash2 size={18} className="text-red-500" /></button>
+                          <button onClick={() => openWhatsApp(c.phone)}><MessageCircle size={18} className="text-green-600" /></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Contracts */}
+          {activeTab === 'contracts' && (
+            <div>
+              <div className="flex justify-between mb-6">
+                <h2 className="text-3xl font-bold">عقود الصيانة</h2>
+                <button onClick={() => setShowContractModal(true)} className="btn-primary"><Plus size={20} /> إنشاء عقد</button>
+              </div>
+              <div className="card overflow-hidden">
+                <table className="w-full">
+                  <thead><tr className="table-header">
+                    <th className="p-4">العميل</th><th className="p-4">القيمة</th><th className="p-4">الزيارات</th><th className="p-4">PDF</th>
+                  </tr></thead>
+                  <tbody>
+                    {contracts.map(contract => (
+                      <tr key={contract.id} className="border-t">
+                        <td className="p-4">{contract.customerName}</td>
+                        <td className="p-4">{contract.value} ج.م</td>
+                        <td className="p-4">{contract.visits}</td>
+                        <td className="p-4"><button onClick={() => generateContractPDF(contract)} className="text-blue-600">تحميل PDF</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Customer Modal */}
+      {showCustomerModal && (
+        <div className="modal">
+          <div className="bg-white rounded-3xl p-8 w-full max-w-lg">
+            <h3 className="text-2xl font-bold mb-6">{editingCustomer ? 'تعديل العميل' : 'إضافة عميل'}</h3>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const form = e.currentTarget as any;
+              saveCustomer({
+                name: form.name.value,
+                phone: form.phone.value,
+                address: form.address.value,
+                type: form.type.value,
+                devicesCount: parseInt(form.devicesCount.value),
+                rating: parseInt(form.rating.value),
+              });
+            }}>
+              <input name="name" defaultValue={editingCustomer?.name} placeholder="الاسم" className="input mb-4" required />
+              <input name="phone" defaultValue={editingCustomer?.phone} placeholder="الهاتف" className="input mb-4" required />
+              <input name="address" defaultValue={editingCustomer?.address} placeholder="العنوان" className="input mb-4" required />
+              <div className="grid grid-cols-2 gap-4">
+                <input name="devicesCount" type="number" defaultValue={editingCustomer?.devicesCount || 1} className="input" />
+                <input name="rating" type="number" defaultValue={editingCustomer?.rating || 5} className="input" />
+              </div>
+              <select name="type" defaultValue={editingCustomer?.type || 'سكني'} className="input mt-4">
+                <option value="سكني">سكني</option><option value="تجاري">تجاري</option>
+              </select>
+              <div className="flex gap-3 mt-6">
+                <button type="submit" className="btn-primary flex-1">حفظ</button>
+                <button type="button" onClick={() => setShowCustomerModal(false)} className="btn-secondary flex-1">إلغاء</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Contract Modal */}
+      {showContractModal && (
+        <div className="modal">
+          <div className="bg-white rounded-3xl p-8 w-full max-w-lg">
+            <h3 className="text-2xl font-bold mb-6">إنشاء عقد صيانة</h3>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const form = e.currentTarget as any;
+              saveContract({
+                customerId: form.customer.value,
+                startDate: form.start.value,
+                endDate: form.end.value,
+                value: form.value.value,
+                visits: form.visits.value,
+                devicesCount: form.devices.value,
+              });
+            }}>
+              <select name="customer" className="input mb-4" required>
+                {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <div className="grid grid-cols-2 gap-4">
+                <input name="start" type="date" className="input" required />
+                <input name="end" type="date" className="input" required />
+              </div>
+              <input name="value" type="number" placeholder="قيمة العقد" className="input mt-4" required />
+              <input name="visits" type="number" placeholder="عدد الزيارات" className="input mt-4" required />
+              <input name="devices" type="number" placeholder="عدد الأجهزة" className="input mt-4" required />
+              <div className="flex gap-3 mt-6">
+                <button type="submit" className="btn-primary flex-1">إنشاء</button>
+                <button type="button" onClick={() => setShowContractModal(false)} className="btn-secondary flex-1">إلغاء</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
